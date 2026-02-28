@@ -19,7 +19,7 @@ Projekt wykorzystuje wirtualne środowiska, aby zapewnić spójność wersji bib
 
 ```bash
 git clone https://github.com/lsocpb/data-quality.git
-cd projekt-jakosc-danych
+cd data-quality
 ```
 
 ---
