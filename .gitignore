@@ -1,0 +1,47 @@
+# =========================
+# Dane projektu (Poufne!)
+# =========================
+data/
+*.csv
+*.tsv
+*.xlsx
+*.jpg
+*.jpeg
+*.png
+*.zip
+
+# =========================
+# Środowiska wirtualne
+# =========================
+venv/
+env/
+.venv/
+.env
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# Jupyter Notebook
+# =========================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# =========================
+# Pliki systemowe (Windows/Mac)
+# =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# =========================
+# IDE i edytory kodu
+# =========================
+.vscode/
+.idea/
+*.swp
