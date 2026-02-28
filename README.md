@@ -18,7 +18,7 @@ Projekt wykorzystuje wirtualne środowiska, aby zapewnić spójność wersji bib
 ## 1️⃣ Pobranie repozytorium
 
 ```bash
-git clone <TUTAJ_WSTAW_LINK_DO_SWOJEGO_REPO>
+git clone https://github.com/lsocpb/data-quality.git
 cd projekt-jakosc-danych
 ```
 
