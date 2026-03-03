@@ -25,7 +25,7 @@ uv add pandas sqlalchemy psycopg2-binary python-dotenv
 **Nigdy nie wpisuj hasła do bazy bezpośrednio w notatniku.**
 
 1. Utwórz w głównym katalogu projektu plik o nazwie `.env` (plik ten jest ignorowany przez Gita).
-2. Wklej do niego swój ciąg połączeniowy z bazy Neon.tech (pamiętaj, aby prefiks `postgres://` zamienić na `postgresql://`):
+2. Wklej do niego swój ciąg połączeniowy z bazy Neon.tech (zgłoś się do mnie po poprawny URL jezeli jeszcze go nie dostales)
 
 ```env
 DATABASE_URL=postgresql://<USER>:<PASSWORD>@ep-twoja-baza.eu-central-1.aws.neon.tech/neondb?sslmode=require
@@ -63,3 +63,4 @@ display(df.head())
 ```
 
 Od tego momentu masz w zmiennej `df` surowe dane (ID użytkownika, wciśnięty klawisz, czas wciśnięcia i puszczenia), gotowe do agregacji cech (Dwell Time, Flight Time) oraz zaawansowanej analizy z użyciem algorytmów PCA i k-Means.
+
