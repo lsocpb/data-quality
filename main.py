@@ -7,8 +7,9 @@ import statistics
 import cv2
 import matplotlib.pyplot as plt
 
-from src.brisque import BrisqueEvaluator
 from src.noise import NoiseEvaluator
+
+from src.brisque import BrisqueEvaluator
 from src.segmentation import (
     create_overlay,
     dice_score,
@@ -28,13 +29,6 @@ SCORE_DIR = Path("score")
 MODEL_PATH = "model/brisque_model_live.yml"
 RANGE_PATH = "model/brisque_range_live.yml"
 
-OUTPUT_CSV = "wyniki_brisque.csv"
-NOISE_CSV = "wyniki_noise.csv"
-SUMMARY_CSV = "podsumowanie.csv"
-RANKING_CSV = "ranking_osob.csv"
-
-CHART_MEAN_PATH = "wykres_sredni_brisque.png"
-
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 SUPPORTED_MASK_EXTENSIONS = [".png", ".jpg", ".jpeg"]
 
@@ -42,6 +36,8 @@ BRISQUE_RESULTS_CSV = SCORE_DIR / "wyniki_brisque.csv"
 BRISQUE_SUMMARY_CSV = SCORE_DIR / "podsumowanie_brisque.csv"
 BRISQUE_RANKING_CSV = SCORE_DIR / "ranking_brisque.csv"
 BRISQUE_CHART_PATH = SCORE_DIR / "wykres_sredni_brisque.png"
+
+NOISE_RESULTS_CSV = SCORE_DIR / "wyniki_noise.csv"
 
 SEGMENTATION_RESULTS_CSV = SCORE_DIR / "wyniki_segmentacji.csv"
 SEGMENTATION_SUMMARY_CSV = SCORE_DIR / "podsumowanie_segmentacji.csv"
@@ -171,9 +167,7 @@ def print_brisque_ranking(ranking_rows):
 
 def run_brisque(person_filter: str | None = None, limit: int | None = None):
     evaluator = BrisqueEvaluator(MODEL_PATH, RANGE_PATH)
-    noise_evaluator = NoiseEvaluator()
     results = []
-    noise_results = []
 
     for person_dir in list_person_dirs(ROOT_DIR, person_filter):
         print(f"\nOsoba: {person_dir.name}")
@@ -191,29 +185,6 @@ def run_brisque(person_filter: str | None = None, limit: int | None = None):
                 )
             except Exception as exc:
                 print(f"  Blad: {image_path.name} -> {exc}")
-                brisque_score = evaluator.compute_score(str(img))
-                noise_score = noise_evaluator.compute_noise(str(img))
-                print(
-                    f"  {img.name}: BRISQUE={brisque_score:.4f}, "
-                    f"NOISE={noise_score:.2f}%, "
-                )
-
-                results.append({
-                    "osoba": person_dir.name,
-                    "zdjecie": img.name,
-                    "sciezka": str(img.resolve()),
-                    "brisque": round(brisque_score, 4),
-                    "noise_percent": round(noise_score, 2),
-                })
-                noise_results.append({
-                    "osoba": person_dir.name,
-                    "zdjecie": img.name,
-                    "sciezka": str(img.resolve()),
-                    "noise_percent": round(noise_score, 2),
-                })
-
-            except Exception as e:
-                print(f"  Błąd: {img.name} -> {e}")
 
     if not results:
         print("Brak poprawnie przetworzonych zdjec.")
@@ -232,6 +203,38 @@ def run_brisque(person_filter: str | None = None, limit: int | None = None):
     print(f"Podsumowanie BRISQUE: {BRISQUE_SUMMARY_CSV}")
     print(f"Ranking BRISQUE: {BRISQUE_RANKING_CSV}")
     print(f"Wykres BRISQUE: {BRISQUE_CHART_PATH}")
+
+def run_noise(person_filter: str | None = None, limit: int | None = None):
+    noise_evaluator = NoiseEvaluator()
+    noise_results = []
+
+    for person_dir in list_person_dirs(ROOT_DIR, person_filter):
+        print(f"\nOsoba: {person_dir.name}")
+
+        for image_path in list_images(person_dir, limit):
+            try:
+                noise_score = noise_evaluator.compute_noise(str(image_path))
+
+                print(f"  {image_path.name}: NOISE={noise_score:.2f}%")
+
+                noise_results.append({
+                    "osoba": person_dir.name,
+                    "zdjecie": image_path.name,
+                    "sciezka": str(image_path.resolve()),
+                    "noise_percent": round(noise_score, 2),
+                })
+
+            except Exception as e:
+                print(f"  Błąd: {image_path.name} -> {e}")
+
+    if not noise_results:
+        print("Brak danych.")
+        return
+
+    save_csv(noise_results, NOISE_RESULTS_CSV)
+
+    print("\nZakończono.")
+    print(f"Wyniki szumu: {NOISE_RESULTS_CSV}")
 
 
 def save_mask(mask, output_path: Path):
@@ -313,8 +316,6 @@ def run_segmentation(person_filter: str | None = None, limit: int | None = None)
                 )
                 print(f"  {image_path.name}: brak maski recznej")
                 continue
-    save_csv(results, OUTPUT_CSV)
-    save_csv(noise_results, NOISE_CSV)
 
             try:
                 image = load_image(str(image_path))
@@ -367,12 +368,6 @@ def run_segmentation(person_filter: str | None = None, limit: int | None = None)
     if missing_mask_rows:
         save_csv(missing_mask_rows, MISSING_MASKS_CSV)
 
-    print("\nZakończono.")
-    print(f"Wyniki zdjęć: {OUTPUT_CSV}")
-    print(f"Podsumowanie osób: {SUMMARY_CSV}")
-    print(f"Ranking osób: {RANKING_CSV}")
-    print(f"Wykres średnich: {CHART_MEAN_PATH}")
-    print(f"Wyniki szumu: {NOISE_CSV}")
     if not compared_rows:
         print("\nNie policzono metryk, bo nie znaleziono dopasowanych masek recznych.")
         if missing_mask_rows:
@@ -407,7 +402,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["brisque", "segmentation"],
+        choices=["brisque", "segmentation","noise"],
         default="segmentation",
     )
     parser.add_argument(
@@ -426,6 +421,8 @@ def main():
     args = parse_args()
     if args.task == "brisque":
         run_brisque(person_filter=args.person, limit=args.limit)
+    elif args.task == "noise":
+        run_noise(person_filter=args.person, limit=args.limit)
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 
