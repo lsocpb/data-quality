@@ -5,6 +5,7 @@ import statistics
 import matplotlib.pyplot as plt
 
 from src.brisque import BrisqueEvaluator
+from src.noise import NoiseEvaluator
 
 
 ROOT_DIR = "faces"
@@ -12,6 +13,7 @@ MODEL_PATH = "model/brisque_model_live.yml"
 RANGE_PATH = "model/brisque_range_live.yml"
 
 OUTPUT_CSV = "wyniki_brisque.csv"
+NOISE_CSV = "wyniki_noise.csv"
 SUMMARY_CSV = "podsumowanie.csv"
 RANKING_CSV = "ranking_osob.csv"
 
@@ -107,7 +109,9 @@ def print_ranking(ranking_rows):
 
 def main():
     evaluator = BrisqueEvaluator(MODEL_PATH, RANGE_PATH)
+    noise_evaluator = NoiseEvaluator()
     results = []
+    noise_results = []
 
     for person_dir in list_persons(ROOT_DIR):
         print(f"\nOsoba: {person_dir.name}")
@@ -115,14 +119,25 @@ def main():
 
         for img in images:
             try:
-                score = evaluator.compute_score(str(img))
-                print(f"  {img.name}: {score:.4f}")
+                brisque_score = evaluator.compute_score(str(img))
+                noise_score = noise_evaluator.compute_noise(str(img))
+                print(
+                    f"  {img.name}: BRISQUE={brisque_score:.4f}, "
+                    f"NOISE={noise_score:.2f}%, "
+                )
 
                 results.append({
                     "osoba": person_dir.name,
                     "zdjecie": img.name,
                     "sciezka": str(img.resolve()),
-                    "brisque": round(score, 4),
+                    "brisque": round(brisque_score, 4),
+                    "noise_percent": round(noise_score, 2),
+                })
+                noise_results.append({
+                    "osoba": person_dir.name,
+                    "zdjecie": img.name,
+                    "sciezka": str(img.resolve()),
+                    "noise_percent": round(noise_score, 2),
                 })
 
             except Exception as e:
@@ -133,6 +148,7 @@ def main():
         return
 
     save_csv(results, OUTPUT_CSV)
+    save_csv(noise_results, NOISE_CSV)
 
     summary_rows = summarize(results)
     save_csv(summary_rows, SUMMARY_CSV)
@@ -150,6 +166,7 @@ def main():
     print(f"Podsumowanie osób: {SUMMARY_CSV}")
     print(f"Ranking osób: {RANKING_CSV}")
     print(f"Wykres średnich: {CHART_MEAN_PATH}")
+    print(f"Wyniki szumu: {NOISE_CSV}")
 
 
 if __name__ == "__main__":
