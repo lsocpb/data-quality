@@ -1,13 +1,13 @@
 # =========================
 # Dane projektu (Poufne!)
 # =========================
-data/
-*.csv
-*.tsv
-*.xlsx
-*.png
-*.zip
-
+data/*
+!data/README.md
+!data/manual_masks/
+!data/manual_masks/**/
+!data/manual_masks/**/*.png
+!data/manual_masks/**/*.jpg
+!data/manual_masks/**/*.jpeg
 # =========================
 # Środowiska wirtualne
 # =========================
