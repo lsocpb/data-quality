@@ -7,6 +7,8 @@ import statistics
 import cv2
 import matplotlib.pyplot as plt
 
+from src.noise import NoiseEvaluator
+
 from src.brisque import BrisqueEvaluator
 from src.segmentation import (
     create_overlay,
@@ -34,6 +36,8 @@ BRISQUE_RESULTS_CSV = SCORE_DIR / "wyniki_brisque.csv"
 BRISQUE_SUMMARY_CSV = SCORE_DIR / "podsumowanie_brisque.csv"
 BRISQUE_RANKING_CSV = SCORE_DIR / "ranking_brisque.csv"
 BRISQUE_CHART_PATH = SCORE_DIR / "wykres_sredni_brisque.png"
+
+NOISE_RESULTS_CSV = SCORE_DIR / "wyniki_noise.csv"
 
 SEGMENTATION_RESULTS_CSV = SCORE_DIR / "wyniki_segmentacji.csv"
 SEGMENTATION_SUMMARY_CSV = SCORE_DIR / "podsumowanie_segmentacji.csv"
@@ -199,6 +203,38 @@ def run_brisque(person_filter: str | None = None, limit: int | None = None):
     print(f"Podsumowanie BRISQUE: {BRISQUE_SUMMARY_CSV}")
     print(f"Ranking BRISQUE: {BRISQUE_RANKING_CSV}")
     print(f"Wykres BRISQUE: {BRISQUE_CHART_PATH}")
+
+def run_noise(person_filter: str | None = None, limit: int | None = None):
+    noise_evaluator = NoiseEvaluator()
+    noise_results = []
+
+    for person_dir in list_person_dirs(ROOT_DIR, person_filter):
+        print(f"\nOsoba: {person_dir.name}")
+
+        for image_path in list_images(person_dir, limit):
+            try:
+                noise_score = noise_evaluator.compute_noise(str(image_path))
+
+                print(f"  {image_path.name}: NOISE={noise_score:.2f}%")
+
+                noise_results.append({
+                    "osoba": person_dir.name,
+                    "zdjecie": image_path.name,
+                    "sciezka": str(image_path.resolve()),
+                    "noise_percent": round(noise_score, 2),
+                })
+
+            except Exception as e:
+                print(f"  Błąd: {image_path.name} -> {e}")
+
+    if not noise_results:
+        print("Brak danych.")
+        return
+
+    save_csv(noise_results, NOISE_RESULTS_CSV)
+
+    print("\nZakończono.")
+    print(f"Wyniki szumu: {NOISE_RESULTS_CSV}")
 
 
 def save_mask(mask, output_path: Path):
@@ -366,7 +402,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["brisque", "segmentation"],
+        choices=["brisque", "segmentation","noise"],
         default="segmentation",
     )
     parser.add_argument(
@@ -385,6 +421,8 @@ def main():
     args = parse_args()
     if args.task == "brisque":
         run_brisque(person_filter=args.person, limit=args.limit)
+    elif args.task == "noise":
+        run_noise(person_filter=args.person, limit=args.limit)
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 
