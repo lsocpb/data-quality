@@ -20,7 +20,7 @@ from src.segmentation import (
     resize_mask_to_shape,
     segmentation_methods,
 )
-
+from src.keystroke_pipeline import get_engine, run_pipeline, test_pipeline
 
 ROOT_DIR = Path("faces")
 MANUAL_MASKS_DIR = Path("manual_masks")
@@ -402,7 +402,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["brisque", "segmentation","noise"],
+        choices=["brisque", "segmentation","noise", "keystrokes"],
         default="segmentation",
     )
     parser.add_argument(
@@ -423,6 +423,13 @@ def main():
         run_brisque(person_filter=args.person, limit=args.limit)
     elif args.task == "noise":
         run_noise(person_filter=args.person, limit=args.limit)
+    elif args.task == "keystrokes":
+        engine = get_engine()
+        df = run_pipeline(engine)
+        test_pipeline(engine)
+        print("\n=== KEYSTROKES FEATURES ===")
+        print(df.head())
+        print(f"\nLiczba próbek: {len(df)}")
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 
