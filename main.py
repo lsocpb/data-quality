@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import csv
 import statistics
+import os
 
 import cv2
 import matplotlib.pyplot as plt
@@ -21,6 +22,8 @@ from src.segmentation import (
     segmentation_methods,
 )
 from src.keystroke_pipeline import get_engine, run_pipeline, test_pipeline
+from src.keystroke_smoke_tests import smoke_test_keystroke_pipeline_and_knn
+from src.keystroke_knn import classify_sample
 
 ROOT_DIR = Path("faces")
 MANUAL_MASKS_DIR = Path("manual_masks")
@@ -402,7 +405,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["brisque", "segmentation","noise", "keystrokes"],
+        choices=["brisque", "segmentation","noise", "keystrokes", "keystrokes-smoke"],
         default="segmentation",
     )
     parser.add_argument(
@@ -414,6 +417,20 @@ def parse_args():
         type=int,
         help="Opcjonalnie ogranicz liczbe zdjec na osobe",
     )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=3,
+        help="Liczba sąsiadów dla KNN (tylko dla keystrokes)",
+    )
+
+    parser.add_argument(
+        "--metric",
+        choices=["euclidean", "chebyshev", "bray_curtis"],
+        default="euclidean",
+        help="Metryka odległości dla KNN",
+    )
+
     return parser.parse_args()
 
 
@@ -423,6 +440,8 @@ def main():
         run_brisque(person_filter=args.person, limit=args.limit)
     elif args.task == "noise":
         run_noise(person_filter=args.person, limit=args.limit)
+    elif args.task == "keystrokes-smoke":
+        smoke_test_keystroke_pipeline_and_knn()
     elif args.task == "keystrokes":
         engine = get_engine()
         df = run_pipeline(engine)
@@ -430,6 +449,26 @@ def main():
         print("\n=== KEYSTROKES FEATURES ===")
         print(df.head())
         print(f"\nLiczba próbek: {len(df)}")
+
+        output_path = "score/keystrokes_features.csv"
+        os.makedirs("score", exist_ok=True)
+        df.to_csv(output_path, index=False)
+        print(f"\nZapisano cechy do: {output_path}")
+
+        if len(df) > 1:
+            sample = df.iloc[48]
+            prediction = classify_sample(
+                df,
+                sample,
+                k=args.k,
+                metric=args.metric,
+                exclude_same_sample=True,
+            )
+            print("\n=== KNN SAMPLE CLASSIFICATION ===")
+            print(f"Metryka: {args.metric}, k: {args.k}")
+            print(f'Próbka: UserId={sample["UserId"]}, SampleNumber={sample["SampleNumber"]}')
+            print(f"Przewidziany użytkownik: {prediction.predicted_user}")
+            print(f"Score: {prediction.score:.6f}")
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 
