@@ -92,3 +92,86 @@ Aby edytor widział zainstalowane biblioteki (`pandas`, `scikit-learn`, `cv2`), 
 5. Wybierz **Existing environment**  
 6. Wskaż plik `python.exe` z folderu `.venv`  
 7. Kliknij **OK**
+
+---
+
+## ⌨️ Workflow keystroke dynamics
+
+Repozytorium zawiera kompletny pipeline badawczy dla projektu **keystroke dynamics**:
+
+1. pobranie surowych zdarzeń z bazy,
+2. czyszczenie i budowa macierzy cech,
+3. klasyfikacja kNN z metrykami `Euclidean`, `Chebyshev` i `Bray-Curtis`,
+4. ewaluacja `leave-one-out`,
+5. wygenerowanie artefaktów badawczych oraz wykresu `accuracy vs k`,
+6. identyfikacja i weryfikacja z modyfikowalnym progiem.
+
+### Wymagane dane wejściowe
+
+W katalogu głównym repozytorium albo w `notebooks/.env` musi znajdować się:
+
+```env
+DATABASE_URL=postgresql://...
+```
+
+Pipeline korzysta z tabeli `"Keystrokes"` zapisanej przez aplikację frontendową i API.
+
+### Szybki smoke test bez bazy
+
+Ten test sprawdza:
+- feature engineering,
+- kNN,
+- leave-one-out,
+- rekomendację progu,
+- identyfikację,
+- weryfikację.
+
+```bash
+.venv\Scripts\python.exe main.py --task keystrokes-smoke
+```
+
+### Budowa macierzy cech i ewaluacja leave-one-out
+
+```bash
+.venv\Scripts\python.exe main.py --task keystrokes-loo --k-values 1,3,5
+```
+
+Wyniki trafiają do katalogu `score\`:
+
+- `keystrokes_features.csv`
+- `keystrokes_leave_one_out_iterations.csv`
+- `keystrokes_leave_one_out_summary.csv`
+- `keystrokes_leave_one_out_accuracy_curve.csv`
+- `keystrokes_leave_one_out_best_by_metric.csv`
+- `keystrokes_leave_one_out_best_overall.csv`
+- `keystrokes_leave_one_out_accuracy_vs_k.png`
+
+### Identyfikacja użytkownika
+
+Identyfikacja rozpoznaje najbardziej podobnego użytkownika i może odrzucić decyzję, jeśli score przekroczy próg.
+
+```bash
+.venv\Scripts\python.exe main.py --task keystrokes-identify --metric bray_curtis --k 1 --sample-index 0
+```
+
+Jeśli nie podasz `--threshold`, skrypt sam wyznaczy rekomendowany próg z wyników `leave-one-out` dla wybranych `k` i metryki. Własny próg można wymusić np.:
+
+```bash
+.venv\Scripts\python.exe main.py --task keystrokes-identify --metric bray_curtis --k 1 --sample-index 0 --threshold 0.09
+```
+
+### Weryfikacja deklarowanej tożsamości
+
+Weryfikacja sprawdza, czy próbka jest zgodna z zadeklarowanym użytkownikiem.
+
+```bash
+.venv\Scripts\python.exe main.py --task keystrokes-verify --metric bray_curtis --k 1 --sample-index 0 --claimed-user Jan
+```
+
+Jeśli `--claimed-user` nie zostanie podany, skrypt użyje `UserId` wybranej próbki.
+
+### Uwagi metodologiczne
+
+- Domyślny rekomendowany próg jest wyznaczany z `leave-one-out` i ma ograniczać błędne akceptacje.
+- `keystrokes-identify` i `keystrokes-verify` są trybami demonstracyjnymi dla już zebranych próbek z bazy.
+- Główną oceną jakości systemu pozostaje eksperyment `leave-one-out` oraz wykres `accuracy vs k`.

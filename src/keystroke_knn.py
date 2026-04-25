@@ -86,6 +86,34 @@ def get_metric(metric: str | MetricFn) -> MetricFn:
     return METRICS[key]
 
 
+def distances_to_training_rows(
+    train_features: pd.DataFrame,
+    sample_vector: Iterable[float],
+    *,
+    metric: str | MetricFn = "euclidean",
+    user_col: str = "UserId",
+    sample_col: str = "SampleNumber",
+    feature_cols: list[str] | None = None,
+) -> list[dict]:
+    if train_features.empty:
+        raise ValueError("train_features cannot be empty")
+
+    feature_cols = feature_cols or feature_columns(train_features)
+    if not feature_cols:
+        raise ValueError("No feature columns found")
+
+    metric_fn = get_metric(metric)
+    sample_vector = [float(value) for value in sample_vector]
+
+    distances = []
+    for _, row in train_features.iterrows():
+        train_vector = [row[column] for column in feature_cols]
+        distance = metric_fn(sample_vector, train_vector)
+        distances.append({"user": row[user_col], "sample": row[sample_col], "distance": distance})
+
+    return sorted(distances, key=lambda item: item["distance"])
+
+
 def knn_predict(
     train_features: pd.DataFrame,
     sample_vector: Iterable[float],
@@ -98,23 +126,15 @@ def knn_predict(
 ) -> KNNPrediction:
     if k <= 0:
         raise ValueError("k must be positive")
-    if train_features.empty:
-        raise ValueError("train_features cannot be empty")
-
     feature_cols = feature_cols or feature_columns(train_features)
-    if not feature_cols:
-        raise ValueError("No feature columns found")
-
-    metric_fn = get_metric(metric)
-    sample_vector = [float(value) for value in sample_vector]
-
-    neighbors = []
-    for _, row in train_features.iterrows():
-        train_vector = [row[column] for column in feature_cols]
-        distance = metric_fn(sample_vector, train_vector)
-        neighbors.append({"user": row[user_col], "sample": row[sample_col], "distance": distance})
-
-    neighbors = sorted(neighbors, key=lambda item: item["distance"])[: min(k, len(neighbors))]
+    neighbors = distances_to_training_rows(
+        train_features,
+        sample_vector,
+        metric=metric,
+        user_col=user_col,
+        sample_col=sample_col,
+        feature_cols=feature_cols,
+    )[: min(k, len(train_features))]
 
     grouped_distances: dict[object, list[float]] = {}
     for neighbor in neighbors:
