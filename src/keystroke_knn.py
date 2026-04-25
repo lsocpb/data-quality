@@ -46,6 +46,25 @@ METRICS: dict[str, MetricFn] = {
 }
 
 
+def canonical_metric_name(metric: str | MetricFn) -> str:
+    if callable(metric):
+        return getattr(metric, "__name__", "callable_metric")
+
+    key = metric.lower()
+    if key in {"bray-curtis", "braycurtis"}:
+        return "bray_curtis"
+    return key
+
+
+def available_metrics() -> list[str]:
+    ordered_metrics: list[str] = []
+    for metric_name in METRICS:
+        canonical_name = canonical_metric_name(metric_name)
+        if canonical_name not in ordered_metrics:
+            ordered_metrics.append(canonical_name)
+    return ordered_metrics
+
+
 @dataclass(frozen=True)
 class KNNPrediction:
     predicted_user: object
@@ -61,7 +80,7 @@ def feature_columns(features: pd.DataFrame) -> list[str]:
 def get_metric(metric: str | MetricFn) -> MetricFn:
     if callable(metric):
         return metric
-    key = metric.lower()
+    key = canonical_metric_name(metric)
     if key not in METRICS:
         raise ValueError(f"Unsupported metric '{metric}'. Choose one of: {sorted(METRICS)}")
     return METRICS[key]

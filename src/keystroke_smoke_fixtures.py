@@ -169,3 +169,45 @@ def smoke_test_sample() -> pd.Series:
 EXPECTED_SMOKE_PREDICTION = "Majkel"
 EXPECTED_SMOKE_METRIC = "bray_curtis"
 EXPECTED_SMOKE_K = 1
+EXPECTED_LOO_KS = [1, 3, 5]
+EXPECTED_LOO_METRICS = ["euclidean", "chebyshev", "bray_curtis"]
+
+
+def expected_leave_one_out_summary() -> pd.DataFrame:
+    rows = []
+    for metric in EXPECTED_LOO_METRICS:
+        rows.extend(
+            [
+                {
+                    "metric": metric,
+                    "k": 1,
+                    "iterations": 6,
+                    "correct_predictions": 4,
+                    "accuracy": 0.666667,
+                    "precision_macro": 0.444444,
+                    "recall_macro": 0.666667,
+                    "f1_macro": 0.533333,
+                },
+                {
+                    "metric": metric,
+                    "k": 3,
+                    "iterations": 6,
+                    "correct_predictions": 4,
+                    "accuracy": 0.666667,
+                    "precision_macro": 0.444444,
+                    "recall_macro": 0.666667,
+                    "f1_macro": 0.533333,
+                },
+                {
+                    "metric": metric,
+                    "k": 5,
+                    "iterations": 6,
+                    "correct_predictions": 0,
+                    "accuracy": 0.0,
+                    "precision_macro": 0.0,
+                    "recall_macro": 0.0,
+                    "f1_macro": 0.0,
+                },
+            ]
+        )
+    return pd.DataFrame(rows)

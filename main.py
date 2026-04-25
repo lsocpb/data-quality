@@ -22,8 +22,13 @@ from src.segmentation import (
     segmentation_methods,
 )
 from src.keystroke_pipeline import get_engine, run_pipeline, test_pipeline
+from src.keystroke_leave_one_out import evaluate_leave_one_out
+from src.keystroke_research_artifacts import (
+    build_keystroke_research_artifacts,
+    plot_accuracy_vs_k,
+)
 from src.keystroke_smoke_tests import smoke_test_keystroke_pipeline_and_knn
-from src.keystroke_knn import classify_sample
+from src.keystroke_knn import available_metrics, classify_sample
 
 ROOT_DIR = Path("faces")
 MANUAL_MASKS_DIR = Path("manual_masks")
@@ -48,6 +53,15 @@ SEGMENTATION_PERSON_SUMMARY_CSV = SCORE_DIR / "podsumowanie_segmentacji_osoby.cs
 MISSING_MASKS_CSV = SCORE_DIR / "brakujace_maski_reczne.csv"
 SEGMENTATION_MASKS_DIR = SCORE_DIR / "maski"
 SEGMENTATION_OVERLAYS_DIR = SCORE_DIR / "overlaye"
+
+KEYSTROKES_FEATURES_CSV = SCORE_DIR / "keystrokes_features.csv"
+KEYSTROKES_LOO_ITERATIONS_CSV = SCORE_DIR / "keystrokes_leave_one_out_iterations.csv"
+KEYSTROKES_LOO_SUMMARY_CSV = SCORE_DIR / "keystrokes_leave_one_out_summary.csv"
+KEYSTROKES_LOO_ACCURACY_CURVE_CSV = SCORE_DIR / "keystrokes_leave_one_out_accuracy_curve.csv"
+KEYSTROKES_LOO_BEST_BY_METRIC_CSV = SCORE_DIR / "keystrokes_leave_one_out_best_by_metric.csv"
+KEYSTROKES_LOO_BEST_OVERALL_CSV = SCORE_DIR / "keystrokes_leave_one_out_best_overall.csv"
+KEYSTROKES_LOO_ACCURACY_PLOT = SCORE_DIR / "keystrokes_leave_one_out_accuracy_vs_k.png"
+DEFAULT_LOO_K_VALUES = [1, 3, 5]
 
 
 def ensure_parent_dir(path: Path):
@@ -102,6 +116,89 @@ def save_csv(rows, path: Path):
         writer = csv.DictWriter(file_obj, fieldnames=rows[0].keys(), delimiter=";")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def parse_k_values(raw_value: str | None) -> list[int]:
+    if not raw_value:
+        return DEFAULT_LOO_K_VALUES.copy()
+
+    values = []
+    for chunk in raw_value.split(","):
+        stripped = chunk.strip()
+        if not stripped:
+            continue
+        k = int(stripped)
+        if k <= 0:
+            raise ValueError("All leave-one-out k values must be positive")
+        if k not in values:
+            values.append(k)
+
+    if not values:
+        raise ValueError("At least one leave-one-out k value is required")
+
+    return values
+
+
+def print_keystroke_loo_summary(summary_df, *, title: str = "KEYSTROKES LEAVE-ONE-OUT SUMMARY"):
+    print(f"\n=== {title} ===")
+    for _, row in summary_df.iterrows():
+        print(
+            f'metric={row["metric"]:<12} '
+            f'k={int(row["k"]):<2} '
+            f'accuracy={row["accuracy"]:.4f} '
+            f'precision_macro={row["precision_macro"]:.4f} '
+            f'recall_macro={row["recall_macro"]:.4f} '
+            f'f1_macro={row["f1_macro"]:.4f}'
+        )
+
+
+def print_keystroke_research_overview(best_overall_df, best_by_metric_df):
+    if not best_overall_df.empty:
+        best_row = best_overall_df.iloc[0]
+        print("\n=== KEYSTROKES BEST OVERALL ===")
+        print(
+            f'metric={best_row["metric"]} '
+            f'k={int(best_row["k"])} '
+            f'accuracy={best_row["accuracy"]:.4f} '
+            f'f1_macro={best_row["f1_macro"]:.4f}'
+        )
+
+    print("\n=== KEYSTROKES BEST BY METRIC ===")
+    for _, row in best_by_metric_df.iterrows():
+        print(
+            f'metric={row["metric"]:<12} '
+            f'best_k={int(row["k"]):<2} '
+            f'accuracy={row["accuracy"]:.4f} '
+            f'f1_macro={row["f1_macro"]:.4f}'
+        )
+
+
+def run_keystrokes_leave_one_out(df, *, k_values: list[int]):
+    evaluation = evaluate_leave_one_out(
+        df,
+        ks=k_values,
+        metrics=available_metrics(),
+    )
+    artifacts = build_keystroke_research_artifacts(evaluation)
+
+    os.makedirs("score", exist_ok=True)
+    artifacts.raw_results.to_csv(KEYSTROKES_LOO_ITERATIONS_CSV, index=False)
+    artifacts.aggregated_results.to_csv(KEYSTROKES_LOO_SUMMARY_CSV, index=False)
+    artifacts.accuracy_curve.to_csv(KEYSTROKES_LOO_ACCURACY_CURVE_CSV, index=False)
+    artifacts.best_by_metric.to_csv(KEYSTROKES_LOO_BEST_BY_METRIC_CSV, index=False)
+    artifacts.best_overall.to_csv(KEYSTROKES_LOO_BEST_OVERALL_CSV, index=False)
+    plot_accuracy_vs_k(artifacts.accuracy_curve, KEYSTROKES_LOO_ACCURACY_PLOT)
+
+    print_keystroke_loo_summary(artifacts.aggregated_results)
+    print_keystroke_research_overview(artifacts.best_overall, artifacts.best_by_metric)
+    print(f"\nZapisano wyniki surowe LOO do: {KEYSTROKES_LOO_ITERATIONS_CSV}")
+    print(f"Zapisano wyniki zagregowane LOO do: {KEYSTROKES_LOO_SUMMARY_CSV}")
+    print(f"Zapisano accuracy curve do: {KEYSTROKES_LOO_ACCURACY_CURVE_CSV}")
+    print(f"Zapisano najlepsze konfiguracje per metryka do: {KEYSTROKES_LOO_BEST_BY_METRIC_CSV}")
+    print(f"Zapisano najlepsza konfiguracje globalna do: {KEYSTROKES_LOO_BEST_OVERALL_CSV}")
+    print(f"Zapisano wykres accuracy vs k do: {KEYSTROKES_LOO_ACCURACY_PLOT}")
+
+    return evaluation
 
 
 def summarize_brisque(results):
@@ -405,7 +502,14 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--task",
-        choices=["brisque", "segmentation","noise", "keystrokes", "keystrokes-smoke"],
+        choices=[
+            "brisque",
+            "segmentation",
+            "noise",
+            "keystrokes",
+            "keystrokes-loo",
+            "keystrokes-smoke",
+        ],
         default="segmentation",
     )
     parser.add_argument(
@@ -431,6 +535,11 @@ def parse_args():
         help="Metryka odległości dla KNN",
     )
 
+    parser.add_argument(
+        "--k-values",
+        help="Lista wartosci k dla leave-one-out, np. 1,3,5",
+    )
+
     return parser.parse_args()
 
 
@@ -442,7 +551,7 @@ def main():
         run_noise(person_filter=args.person, limit=args.limit)
     elif args.task == "keystrokes-smoke":
         smoke_test_keystroke_pipeline_and_knn()
-    elif args.task == "keystrokes":
+    elif args.task in {"keystrokes", "keystrokes-loo"}:
         engine = get_engine()
         df = run_pipeline(engine)
         test_pipeline(engine)
@@ -450,13 +559,13 @@ def main():
         print(df.head())
         print(f"\nLiczba próbek: {len(df)}")
 
-        output_path = "score/keystrokes_features.csv"
         os.makedirs("score", exist_ok=True)
-        df.to_csv(output_path, index=False)
-        print(f"\nZapisano cechy do: {output_path}")
+        df.to_csv(KEYSTROKES_FEATURES_CSV, index=False)
+        print(f"\nZapisano cechy do: {KEYSTROKES_FEATURES_CSV}")
 
-        if len(df) > 1:
-            sample = df.iloc[48]
+        if args.task == "keystrokes" and len(df) > 1:
+            sample_index = min(48, len(df) - 1)
+            sample = df.iloc[sample_index]
             prediction = classify_sample(
                 df,
                 sample,
@@ -469,6 +578,9 @@ def main():
             print(f'Próbka: UserId={sample["UserId"]}, SampleNumber={sample["SampleNumber"]}')
             print(f"Przewidziany użytkownik: {prediction.predicted_user}")
             print(f"Score: {prediction.score:.6f}")
+
+        loo_k_values = parse_k_values(args.k_values)
+        run_keystrokes_leave_one_out(df, k_values=loo_k_values)
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 

@@ -1,0 +1,4 @@
+metric,k,iterations,correct_predictions,accuracy,precision_macro,recall_macro,f1_macro
+bray_curtis,3,89,32,0.359551,0.356944,0.3325,0.315928
+chebyshev,1,89,17,0.191011,0.152024,0.185,0.156565
+euclidean,5,89,26,0.292135,0.228413,0.275,0.242297
