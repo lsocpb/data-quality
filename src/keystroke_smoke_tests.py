@@ -2,6 +2,11 @@
 
 import pandas as pd
 
+from src.keystroke_identity import (
+    identify_sample,
+    suggest_identification_threshold,
+    verify_claimed_identity,
+)
 from src.keystroke_leave_one_out import evaluate_leave_one_out
 from src.keystroke_pipeline import clean_data, sort_data, build_features
 from src.keystroke_knn import classify_sample
@@ -14,6 +19,10 @@ from src.keystroke_smoke_fixtures import (
     EXPECTED_SMOKE_PREDICTION,
     EXPECTED_SMOKE_K,
     EXPECTED_SMOKE_METRIC,
+    EXPECTED_IDENTIFICATION_THRESHOLD,
+    EXPECTED_IDENTIFICATION_REJECT_THRESHOLD,
+    EXPECTED_VERIFICATION_ACCEPT_CLAIM,
+    EXPECTED_VERIFICATION_REJECT_CLAIM,
     EXPECTED_LOO_KS,
     EXPECTED_LOO_METRICS,
 )
@@ -83,9 +92,67 @@ def smoke_test_keystroke_pipeline_and_knn():
         f"Unexpected LOO predictions for bray_curtis, k=1: {k1_predictions}"
     )
 
+    threshold_recommendation = suggest_identification_threshold(
+        loo_evaluation.iterations,
+        metric=EXPECTED_SMOKE_METRIC,
+        k=EXPECTED_SMOKE_K,
+    )
+    assert abs(threshold_recommendation.threshold - EXPECTED_IDENTIFICATION_THRESHOLD) < 0.000001, (
+        f"Expected threshold {EXPECTED_IDENTIFICATION_THRESHOLD}, "
+        f"got {threshold_recommendation.threshold}"
+    )
+
+    accepted_identification = identify_sample(
+        train_df,
+        sample,
+        k=EXPECTED_SMOKE_K,
+        metric=EXPECTED_SMOKE_METRIC,
+        threshold=threshold_recommendation.threshold,
+        exclude_same_sample=False,
+    )
+    assert accepted_identification.accepted_user == EXPECTED_SMOKE_PREDICTION, (
+        f"Expected accepted user {EXPECTED_SMOKE_PREDICTION}, "
+        f"got {accepted_identification.accepted_user}"
+    )
+    assert not accepted_identification.rejected, "Expected identification to be accepted"
+
+    rejected_identification = identify_sample(
+        train_df,
+        sample,
+        k=EXPECTED_SMOKE_K,
+        metric=EXPECTED_SMOKE_METRIC,
+        threshold=EXPECTED_IDENTIFICATION_REJECT_THRESHOLD,
+        exclude_same_sample=False,
+    )
+    assert rejected_identification.rejected, "Expected identification to be rejected by strict threshold"
+    assert rejected_identification.accepted_user is None, "Rejected identification should not accept a user"
+
+    accepted_verification = verify_claimed_identity(
+        train_df,
+        sample,
+        claimed_user=EXPECTED_VERIFICATION_ACCEPT_CLAIM,
+        k=EXPECTED_SMOKE_K,
+        metric=EXPECTED_SMOKE_METRIC,
+        threshold=threshold_recommendation.threshold,
+        exclude_same_sample=False,
+    )
+    assert accepted_verification.matched, "Expected claimed identity to be accepted"
+
+    rejected_verification = verify_claimed_identity(
+        train_df,
+        sample,
+        claimed_user=EXPECTED_VERIFICATION_REJECT_CLAIM,
+        k=EXPECTED_SMOKE_K,
+        metric=EXPECTED_SMOKE_METRIC,
+        threshold=threshold_recommendation.threshold,
+        exclude_same_sample=False,
+    )
+    assert not rejected_verification.matched, "Expected wrong claimed identity to be rejected"
+
     print("✅ Leave-one-out smoke test passed")
     print(f"LOO iterations: {len(loo_evaluation.iterations)}")
     print("LOO metrics checked: accuracy, precision_macro, recall_macro, f1_macro")
+    print("LOO threshold, identification and verification checks passed")
 
     research_artifacts = build_keystroke_research_artifacts(loo_evaluation)
     pd.testing.assert_frame_equal(

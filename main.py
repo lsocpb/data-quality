@@ -29,6 +29,11 @@ from src.keystroke_research_artifacts import (
 )
 from src.keystroke_smoke_tests import smoke_test_keystroke_pipeline_and_knn
 from src.keystroke_knn import available_metrics, classify_sample
+from src.keystroke_identity import (
+    identify_sample,
+    suggest_identification_threshold,
+    verify_claimed_identity,
+)
 
 ROOT_DIR = Path("faces")
 MANUAL_MASKS_DIR = Path("manual_masks")
@@ -62,6 +67,7 @@ KEYSTROKES_LOO_BEST_BY_METRIC_CSV = SCORE_DIR / "keystrokes_leave_one_out_best_b
 KEYSTROKES_LOO_BEST_OVERALL_CSV = SCORE_DIR / "keystrokes_leave_one_out_best_overall.csv"
 KEYSTROKES_LOO_ACCURACY_PLOT = SCORE_DIR / "keystrokes_leave_one_out_accuracy_vs_k.png"
 DEFAULT_LOO_K_VALUES = [1, 3, 5]
+DEFAULT_SAMPLE_INDEX = 48
 
 
 def ensure_parent_dir(path: Path):
@@ -137,6 +143,46 @@ def parse_k_values(raw_value: str | None) -> list[int]:
         raise ValueError("At least one leave-one-out k value is required")
 
     return values
+
+
+def pick_sample(df, sample_index: int | None):
+    if df.empty:
+        raise ValueError("Cannot classify an empty feature set")
+
+    if sample_index is None:
+        sample_index = DEFAULT_SAMPLE_INDEX
+
+    resolved_index = min(max(int(sample_index), 0), len(df) - 1)
+    return resolved_index, df.iloc[resolved_index]
+
+
+def resolve_threshold(df, *, threshold: float | None, metric: str, k: int):
+    if threshold is not None:
+        return float(threshold), None
+
+    evaluation = evaluate_leave_one_out(df, ks=[k], metrics=[metric])
+    recommendation = suggest_identification_threshold(
+        evaluation.iterations,
+        metric=metric,
+        k=k,
+    )
+    return recommendation.threshold, recommendation
+
+
+def print_threshold_recommendation(recommendation):
+    if recommendation is None:
+        return
+
+    print("\n=== RECOMMENDED IDENTIFICATION THRESHOLD ===")
+    print(
+        f"metric={recommendation.metric} "
+        f"k={recommendation.k} "
+        f"threshold={recommendation.threshold:.6f} "
+        f"decision_accuracy={recommendation.decision_accuracy:.4f} "
+        f"FAR={recommendation.false_accept_rate:.4f} "
+        f"FRR={recommendation.false_reject_rate:.4f} "
+        f"strategy={recommendation.strategy}"
+    )
 
 
 def print_keystroke_loo_summary(summary_df, *, title: str = "KEYSTROKES LEAVE-ONE-OUT SUMMARY"):
@@ -508,6 +554,8 @@ def parse_args():
             "noise",
             "keystrokes",
             "keystrokes-loo",
+            "keystrokes-identify",
+            "keystrokes-verify",
             "keystrokes-smoke",
         ],
         default="segmentation",
@@ -539,6 +587,20 @@ def parse_args():
         "--k-values",
         help="Lista wartosci k dla leave-one-out, np. 1,3,5",
     )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        help="Opcjonalny prog identyfikacji/weryfikacji. Gdy brak, zostanie zaproponowany z leave-one-out.",
+    )
+    parser.add_argument(
+        "--sample-index",
+        type=int,
+        help="Indeks probki do identyfikacji lub weryfikacji.",
+    )
+    parser.add_argument(
+        "--claimed-user",
+        help="Deklarowany uzytkownik do weryfikacji. Gdy brak, zostanie uzyty UserId probki.",
+    )
 
     return parser.parse_args()
 
@@ -551,7 +613,7 @@ def main():
         run_noise(person_filter=args.person, limit=args.limit)
     elif args.task == "keystrokes-smoke":
         smoke_test_keystroke_pipeline_and_knn()
-    elif args.task in {"keystrokes", "keystrokes-loo"}:
+    elif args.task in {"keystrokes", "keystrokes-loo", "keystrokes-identify", "keystrokes-verify"}:
         engine = get_engine()
         df = run_pipeline(engine)
         test_pipeline(engine)
@@ -564,8 +626,7 @@ def main():
         print(f"\nZapisano cechy do: {KEYSTROKES_FEATURES_CSV}")
 
         if args.task == "keystrokes" and len(df) > 1:
-            sample_index = min(48, len(df) - 1)
-            sample = df.iloc[sample_index]
+            sample_index, sample = pick_sample(df, args.sample_index)
             prediction = classify_sample(
                 df,
                 sample,
@@ -575,12 +636,71 @@ def main():
             )
             print("\n=== KNN SAMPLE CLASSIFICATION ===")
             print(f"Metryka: {args.metric}, k: {args.k}")
+            print(f"Indeks próbki: {sample_index}")
             print(f'Próbka: UserId={sample["UserId"]}, SampleNumber={sample["SampleNumber"]}')
             print(f"Przewidziany użytkownik: {prediction.predicted_user}")
             print(f"Score: {prediction.score:.6f}")
+            loo_k_values = parse_k_values(args.k_values)
+            run_keystrokes_leave_one_out(df, k_values=loo_k_values)
 
-        loo_k_values = parse_k_values(args.k_values)
-        run_keystrokes_leave_one_out(df, k_values=loo_k_values)
+        elif args.task == "keystrokes-identify" and len(df) > 1:
+            sample_index, sample = pick_sample(df, args.sample_index)
+            threshold, recommendation = resolve_threshold(
+                df,
+                threshold=args.threshold,
+                metric=args.metric,
+                k=args.k,
+            )
+            decision = identify_sample(
+                df,
+                sample,
+                k=args.k,
+                metric=args.metric,
+                threshold=threshold,
+                exclude_same_sample=True,
+            )
+            print_threshold_recommendation(recommendation)
+            print("\n=== KEYSTROKES IDENTIFICATION ===")
+            print(f"Metryka: {args.metric}, k: {args.k}, threshold: {threshold:.6f}")
+            print(f"Indeks próbki: {sample_index}")
+            print(f'Próbka: UserId={sample["UserId"]}, SampleNumber={sample["SampleNumber"]}')
+            print(f"Najbliższy użytkownik: {decision.predicted_user}")
+            print(f"Score: {decision.score:.6f}")
+            print(
+                f"Decyzja: {'odrzucono próbkę' if decision.rejected else f'zaakceptowano użytkownika {decision.accepted_user}'}"
+            )
+
+        elif args.task == "keystrokes-verify" and len(df) > 1:
+            sample_index, sample = pick_sample(df, args.sample_index)
+            threshold, recommendation = resolve_threshold(
+                df,
+                threshold=args.threshold,
+                metric=args.metric,
+                k=args.k,
+            )
+            claimed_user = args.claimed_user or sample["UserId"]
+            decision = verify_claimed_identity(
+                df,
+                sample,
+                claimed_user=claimed_user,
+                k=args.k,
+                metric=args.metric,
+                threshold=threshold,
+                exclude_same_sample=True,
+            )
+            print_threshold_recommendation(recommendation)
+            print("\n=== KEYSTROKES VERIFICATION ===")
+            print(f"Metryka: {args.metric}, k: {args.k}, threshold: {threshold:.6f}")
+            print(f"Indeks próbki: {sample_index}")
+            print(f'Próbka: UserId={sample["UserId"]}, SampleNumber={sample["SampleNumber"]}')
+            print(f"Deklarowany użytkownik: {decision.claimed_user}")
+            print(f"Najbliższy użytkownik z kNN: {decision.predicted_user}")
+            print(f"Score deklarowanego użytkownika: {decision.score:.6f}")
+            print(f"Decyzja: {'zgodny' if decision.matched else 'niezgodny'}")
+
+        elif args.task == "keystrokes-loo":
+            loo_k_values = parse_k_values(args.k_values)
+            run_keystrokes_leave_one_out(df, k_values=loo_k_values)
     else:
         run_segmentation(person_filter=args.person, limit=args.limit)
 
