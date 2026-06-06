@@ -10,7 +10,6 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "opencv-contrib-python>=4.13.0.92",
-    "opencv-python>=4.13.0.92",
     "pandas>=3.0.1",
     "psycopg2-binary>=2.9.11",
     "python-dotenv>=1.2.2",

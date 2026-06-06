@@ -1,71 +1,61 @@
+import logging
+import os
+import threading
+import time
+from pathlib import Path
+
+os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
 import cv2
+import pandas as pd
 from tkinter import *
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 
 from multimodal.login_module import validate_user_identifier
 from multimodal.camera_module import keep_camera_frame_temporarily
 from multimodal.typing_module import DEFAULT_TEXT, TypingRecorder
 
+from src.face_eigenfaces import (
+    DEFAULT_THRESHOLD as FACE_THRESHOLD,
+    load_faces,
+    train_eigenfaces,
+    verify_face,
+)
+from src.biometric_fusion import BiometricFusionResult, fuse_and
+from src.keystroke_identity import verify_claimed_identity
+from src.keystroke_pipeline import get_engine, run_pipeline
+
+FACES_DIR = Path(__file__).parent / "faces"
+KEYSTROKE_THRESHOLD = 150.0
+
 
 class AuthDataCollectorApp:
     """
-    UI do pobierania danych użytkownika.
+    UI do pobierania danych i weryfikacji tożsamości użytkownika.
 
-    Aktualny zakres:
+    Kroki:
     1. Pobranie identyfikatora użytkownika.
-    2. Pobranie zdjęcia twarzy z kamery i trzymanie go TYLKO w pamięci.
-    3. Pobranie próbki dynamiki pisania i zapisanie jej jako wektor cech do CSV.
-
-    Ten plik NIE wykonuje jeszcze weryfikacji użytkownika.
+    2. Pobranie zdjęcia twarzy z kamery.
+    3. Pobranie próbki dynamiki pisania.
+    4. Weryfikacja biometryczna: Eigenfaces + dynamika klawiatury (fuzja AND).
     """
 
     def __init__(self, root):
         self.root = root
-        self.root.title("System pobierania danych biometrycznych")
+        self.root.title("System weryfikacji biometrycznej")
         self.root.geometry("840x640")
         self.root.configure(bg="#f4f6f8")
 
-        # Dane identyfikacyjne
         self.user_id = ""
-
-        # Zdjęcie twarzy przechowywane tymczasowo w pamięci.
-        # Typ: numpy.ndarray w formacie OpenCV BGR.
-        #
-        # WAŻNE DLA ZESPOŁU:
-        # To pole należy później przekazać do modułu rozpoznawania twarzy.
-        # Nie zapisujemy tego zdjęcia do pliku.
-        #
-        # Przykład przyszłego użycia:
-        #
-        # result = face_verification_module.verify_user_face(
-        #     captured_frame=self.face_frame,
-        #     database_dir="faces"
-        # )
-        #
-        # Folder referencyjny powinien mieć strukturę:
-        #
-        # faces/
-        # ├── Majkel/
-        # │   ├── 1.jpg
-        # │   ├── 2.jpg
-        # │   └── 3.jpg
-        # ├── Anna/
-        # │   ├── 1.jpg
-        # │   └── 2.jpg
-        #
-        # Nazwa folderu powinna odpowiadać nazwie użytkownika w bazie.
         self.face_frame = None
-
-        # Kamera i aktualna klatka
         self.camera = None
         self.current_frame = None
-
-        # Dane dynamiki pisania
+        self._camera_active = False
         self.sample_number = 1
         self.typing_recorder = TypingRecorder()
         self.typing_csv_path = ""
 
+        self.root.protocol("WM_DELETE_WINDOW", self.close_app)
         self.show_login_screen()
 
     def clear(self):
@@ -78,15 +68,14 @@ class AuthDataCollectorApp:
             text=title,
             font=("Arial", 24, "bold"),
             bg="#f4f6f8",
-            fg="#111827"
+            fg="#111827",
         ).pack(pady=(30, 8))
-
         Label(
             self.root,
             text=subtitle,
             font=("Arial", 12),
             bg="#f4f6f8",
-            fg="#6b7280"
+            fg="#6b7280",
         ).pack(pady=(0, 20))
 
     def card(self):
@@ -107,7 +96,7 @@ class AuthDataCollectorApp:
             bd=0,
             padx=25,
             pady=10,
-            cursor="hand2"
+            cursor="hand2",
         )
 
     # ============================================================
@@ -116,38 +105,17 @@ class AuthDataCollectorApp:
 
     def show_login_screen(self):
         self.clear()
-
-        self.header(
-            "Krok 1: Identyfikacja użytkownika",
-            "Podaj login użytkownika"
-        )
-
+        self.header("Krok 1: Identyfikacja użytkownika", "Podaj login użytkownika")
         frame = self.card()
 
-        Label(
-            frame,
-            text="Identyfikator użytkownika",
-            font=("Arial", 12, "bold"),
-            bg="white",
-            fg="#374151"
-        ).pack(anchor="w")
+        Label(frame, text="Identyfikator użytkownika",
+              font=("Arial", 12, "bold"), bg="white", fg="#374151").pack(anchor="w")
 
-        self.login_entry = Entry(
-            frame,
-            font=("Arial", 15),
-            width=38,
-            relief="solid",
-            bd=1
-        )
+        self.login_entry = Entry(frame, font=("Arial", 15), width=38, relief="solid", bd=1)
         self.login_entry.pack(pady=14, ipady=6)
         self.login_entry.focus()
 
-        self.button(
-            frame,
-            "Dalej",
-            self.save_login,
-            "#2563eb"
-        ).pack(pady=12)
+        self.button(frame, "Dalej", self.save_login, "#2563eb").pack(pady=12)
 
     def save_login(self):
         try:
@@ -160,95 +128,114 @@ class AuthDataCollectorApp:
     # KROK 2 — KAMERA / ZDJĘCIE TWARZY
     # ============================================================
 
+    def _release_camera(self):
+        self._camera_active = False
+        if self.camera:
+            self.camera.release()
+            self.camera = None
+
+    def _open_camera(self):
+        """Próbuje otworzyć kamerę przez MSMF i DSHOW, zwraca obiekt lub None."""
+        for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY):
+            cap = cv2.VideoCapture(0, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            time.sleep(0.5)  # czas na inicjalizację
+            for _ in range(10):
+                ret, _ = cap.read()
+                if ret:
+                    return cap
+                time.sleep(0.05)
+            cap.release()
+        return None
+
     def show_camera_screen(self):
         self.clear()
+        self._chosen_image_path = None
+        self.header("Krok 2: Zdjęcie twarzy", "Zrób zdjęcie kamerą lub wybierz plik")
 
-        self.header(
-            "Krok 2: Zdjęcie twarzy",
-            "Ustaw twarz w kadrze i wykonaj zdjęcie"
+        # --- sekcja kamery ---
+        cam_frame = Frame(self.root, bg="#f4f6f8")
+        cam_frame.pack()
+
+        self.camera = self._open_camera()
+        camera_ok = self.camera is not None
+
+        if camera_ok:
+            self.video_label = Label(cam_frame, bg="#111827")
+            self.video_label.pack(pady=6)
+            self.button(cam_frame, "Zrób zdjęcie kamerą", self.capture_image, "#16a34a").pack(pady=6)
+            self._camera_active = True
+            self.update_camera_frame()
+        else:
+            self._release_camera()
+            Label(cam_frame, text="Kamera niedostępna",
+                  font=("Arial", 11), bg="#f4f6f8", fg="#9ca3af").pack(pady=6)
+
+        # --- separator ---
+        Label(self.root, text="— lub —", font=("Arial", 11),
+              bg="#f4f6f8", fg="#9ca3af").pack(pady=4)
+
+        # --- sekcja pliku (zawsze widoczna) ---
+        file_frame = Frame(self.root, bg="#f4f6f8")
+        file_frame.pack()
+
+        self._file_path_label = Label(file_frame, text="Nie wybrano pliku",
+                                      font=("Arial", 11), bg="#f4f6f8", fg="#9ca3af")
+        self._file_path_label.pack(pady=4)
+
+        btn_row = Frame(file_frame, bg="#f4f6f8")
+        btn_row.pack()
+        self.button(btn_row, "Wybierz zdjęcie z pliku…", self._pick_image_file, "#2563eb").pack(side="left", padx=6)
+        self.button(btn_row, "Dalej →", self._confirm_file_image, "#16a34a").pack(side="left", padx=6)
+
+    def _pick_image_file(self):
+        path = filedialog.askopenfilename(
+            title="Wybierz zdjęcie twarzy",
+            initialdir=str(FACES_DIR),
+            filetypes=[("Obrazy", "*.jpg *.jpeg *.png"), ("Wszystkie pliki", "*.*")],
         )
+        if path:
+            self._chosen_image_path = path
+            self._file_path_label.config(text=Path(path).name, fg="#111827")
 
-        self.camera = cv2.VideoCapture(0)
-
-        if not self.camera.isOpened():
-            messagebox.showerror("Błąd", "Nie można uruchomić kamery.")
-            self.show_login_screen()
+    def _confirm_file_image(self):
+        path = getattr(self, "_chosen_image_path", None)
+        if not path:
+            messagebox.showwarning("Brak pliku", "Wybierz najpierw plik ze zdjęciem.")
             return
-
-        self.video_label = Label(self.root, bg="#111827")
-        self.video_label.pack(pady=10)
-
-        self.button(
-            self.root,
-            "Zrób zdjęcie",
-            self.capture_image,
-            "#16a34a"
-        ).pack(pady=15)
-
-        self.update_camera_frame()
+        img = cv2.imread(path)
+        if img is None:
+            messagebox.showerror("Błąd", f"Nie można wczytać pliku:\n{path}")
+            return
+        self._release_camera()
+        self.face_frame = img
+        self.show_typing_screen()
 
     def update_camera_frame(self):
-        if self.camera is None:
+        if self.camera is None or not self._camera_active:
             return
-
-        ret, frame = self.camera.read()
-
-        if ret:
-            self.current_frame = frame
-
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_rgb = cv2.resize(frame_rgb, (560, 360))
-
-            image = Image.fromarray(frame_rgb)
-            image_tk = ImageTk.PhotoImage(image=image)
-
-            self.video_label.image_tk = image_tk
-            self.video_label.configure(image=image_tk)
-
-        self.root.after(20, self.update_camera_frame)
+        try:
+            ret, frame = self.camera.read()
+            if ret:
+                self.current_frame = frame.copy()
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_rgb = cv2.resize(frame_rgb, (560, 360))
+                image = Image.fromarray(frame_rgb)
+                image_tk = ImageTk.PhotoImage(image=image)
+                self.video_label.image_tk = image_tk
+                self.video_label.configure(image=image_tk)
+        except Exception:
+            pass
+        if self._camera_active:
+            self.root.after(20, self.update_camera_frame)
 
     def capture_image(self):
-        """
-        Pobiera aktualną klatkę z kamery i zapisuje ją tylko w pamięci.
-
-        WAŻNE:
-        - Nie zapisujemy zdjęcia do pliku.
-        - self.face_frame zawiera obraz jako numpy.ndarray.
-        - Obraz jest w formacie OpenCV BGR.
-        - To właśnie self.face_frame należy później przekazać
-          do modułu porównującego twarz z bazą faces/.
-
-        Potencjalny przyszły moduł:
-            face_verification_module.py
-
-        Potencjalna funkcja:
-            verify_user_face(captured_frame, database_dir="faces")
-
-        Przykład:
-            face_result = verify_user_face(
-                captured_frame=self.face_frame,
-                database_dir="faces"
-            )
-
-        Wynik tej funkcji może wyglądać np. tak:
-            {
-                "recognized": True,
-                "matched_user": "Majkel",
-                "confidence": 0.91
-            }
-        """
-
         try:
-            self.face_frame = keep_camera_frame_temporarily(
-                self.current_frame
-            )
-
-            if self.camera:
-                self.camera.release()
-                self.camera = None
-
+            self.face_frame = keep_camera_frame_temporarily(self.current_frame)
+            self._release_camera()
             self.show_typing_screen()
-
         except Exception as error:
             messagebox.showerror("Błąd", str(error))
 
@@ -258,205 +245,174 @@ class AuthDataCollectorApp:
 
     def show_typing_screen(self):
         self.clear()
-
         self.typing_recorder = TypingRecorder()
-
-        self.header(
-            "Krok 3: Dynamika pisania",
-            "Przepisz tekst. System mierzy czasy trzymania klawiszy"
-        )
+        self.header("Krok 3: Dynamika pisania",
+                    "Przepisz tekst. System mierzy czasy trzymania klawiszy")
 
         frame = self.card()
 
-        Label(
-            frame,
-            text="Tekst do przepisania:",
-            font=("Arial", 12, "bold"),
-            bg="white",
-            fg="#374151"
-        ).pack(anchor="w")
+        Label(frame, text="Tekst do przepisania:",
+              font=("Arial", 12, "bold"), bg="white", fg="#374151").pack(anchor="w")
 
-        Label(
-            frame,
-            text=DEFAULT_TEXT,
-            font=("Arial", 14),
-            wraplength=660,
-            bg="#eef2ff",
-            fg="#1e3a8a",
-            padx=18,
-            pady=14,
-            justify="left"
-        ).pack(pady=12, fill="x")
+        Label(frame, text=DEFAULT_TEXT, font=("Arial", 14), wraplength=660,
+              bg="#eef2ff", fg="#1e3a8a", padx=18, pady=14, justify="left").pack(pady=12, fill="x")
 
-        self.text_entry = Text(
-            frame,
-            font=("Arial", 15),
-            width=60,
-            height=4,
-            relief="solid",
-            bd=1,
-            wrap="word"
-        )
+        self.text_entry = Text(frame, font=("Arial", 15), width=60, height=4,
+                               relief="solid", bd=1, wrap="word")
         self.text_entry.pack(pady=12)
         self.text_entry.focus()
 
-        # Rejestrujemy moment naciśnięcia i puszczenia klawisza.
-        #
-        # WAŻNE DLA ZESPOŁU:
-        # Te eventy nie są bezpośrednio zapisywane jako surowe dane.
-        # TypingRecorder przelicza je na cechy hold_<klawisz>,
-        # czyli średni czas trzymania konkretnego klawisza w milisekundach.
         self.text_entry.bind("<KeyPress>", self.on_key_press)
         self.text_entry.bind("<KeyRelease>", self.on_key_release)
 
-        self.button(
-            frame,
-            "Zapisz próbkę",
-            self.finish,
-            "#7c3aed"
-        ).pack(pady=15)
+        self.button(frame, "Weryfikuj tożsamość", self.finish, "#7c3aed").pack(pady=15)
 
     def normalize_key(self, event):
-        """
-        Normalizuje nazwę klawisza do formatu zgodnego z CSV.
-
-        Przykłady:
-        - spacja       -> " "
-        - litera a     -> "a"
-        - litera ł     -> "ł"
-        - Backspace    -> "Backspace"
-        - Shift        -> "Shift"
-        - Enter        -> "Enter"
-
-        Dzięki temu kolumny w CSV mają format:
-        hold_a, hold_b, hold_ł, hold_Backspace, hold_Shift itd.
-        """
-
         if event.keysym == "space":
             return " "
-
         if event.char and len(event.char) == 1:
             return event.char
-
         return event.keysym
 
     def on_key_press(self, event):
-        key = self.normalize_key(event)
-        self.typing_recorder.key_pressed(key)
+        self.typing_recorder.key_pressed(self.normalize_key(event))
 
     def on_key_release(self, event):
-        key = self.normalize_key(event)
-        self.typing_recorder.key_released(key)
+        self.typing_recorder.key_released(self.normalize_key(event))
 
     def finish(self):
-        """
-        Zapisuje próbkę dynamiki pisania do CSV.
-
-        WAŻNE DLA ZESPOŁU:
-        Plik wynikowy typing_features.csv zawiera gotowy wektor cech
-        dla jednej próbki użytkownika.
-
-        Format:
-            UserId,SampleNumber,hold_a,hold_b,hold_c,...
-
-        Przykład:
-            Majkel,1,105.3,109.4,107.0,...
-
-        Te dane można potem wykorzystać bezpośrednio w module ML:
-
-            import pandas as pd
-
-            df = pd.read_csv("typing_features.csv")
-
-            X = df.drop(columns=["UserId", "SampleNumber"])
-            y = df["UserId"]
-
-        Weryfikacja użytkownika może działać np. tak:
-        - pobieramy nową próbkę pisania z UI,
-        - tworzymy z niej wektor cech,
-        - porównujemy go z próbkami zapisanymi wcześniej w CSV,
-        - używamy np.:
-            - odległości Euklidesa,
-            - odległości Czebyszewa,
-            - k-NN,
-            - SVM,
-            - Random Forest,
-            - modelu trenowanego na cechach hold_<klawisz>.
-
-        Ten UI zapisuje dane, ale jeszcze nie wykonuje klasyfikacji.
-        """
-
         try:
             self.typing_csv_path = self.typing_recorder.save_feature_row_to_csv(
                 user_id=self.user_id,
                 sample_number=self.sample_number,
-                output_path="typing_features.csv"
+                output_path="typing_features.csv",
             )
-
-            self.show_summary_screen()
-
+            self.show_loading_screen()
+            threading.Thread(target=self._run_verification, daemon=True).start()
         except Exception as error:
             messagebox.showerror("Błąd", str(error))
 
     # ============================================================
-    # PODSUMOWANIE
+    # KROK 4 — WERYFIKACJA BIOMETRYCZNA
     # ============================================================
 
-    def show_summary_screen(self):
+    def show_loading_screen(self):
         self.clear()
-
-        self.header(
-            "Dane zostały pobrane",
-            "System nie wykonuje jeszcze rozpoznawania użytkownika"
-        )
-
+        self.header("Krok 4: Weryfikacja biometryczna", "Trwa analiza danych…")
         frame = self.card()
 
-        summary = f"""
-Użytkownik:
-{self.user_id}
+        Label(frame, text="Ładowanie danych z bazy i modelu twarzy.\nProszę czekać…",
+              font=("Arial", 13), bg="white", fg="#374151", justify="center").pack(pady=20)
 
-Numer próbki:
-{self.sample_number}
+        self._spinner_label = Label(frame, text="⏳", font=("Arial", 32), bg="white")
+        self._spinner_label.pack()
 
-Zdjęcie twarzy:
-pobrane tymczasowo do pamięci jako self.face_frame
+    def _run_verification(self):
+        try:
+            result = self._verify_biometric()
+            self.root.after(0, lambda: self.show_verification_result(result))
+        except Exception as error:
+            self.root.after(0, lambda e=error: self.show_verification_result(None, error=e))
 
-Format zdjęcia:
-numpy.ndarray, OpenCV BGR
+    def _verify_biometric(self) -> BiometricFusionResult:
+        # --- Weryfikacja klawiaturowa ---
+        engine = get_engine()
+        training_features = run_pipeline(engine)
 
-Cechy dynamiki pisania zapisane w:
-{self.typing_csv_path}
+        row_dict = self.typing_recorder.build_feature_row(self.user_id, self.sample_number)
+        sample_row = pd.Series(row_dict)
 
-Format danych klawiatury:
-UserId, SampleNumber, hold_<klawisz>
+        # Wyrównanie kolumn do danych treningowych
+        for col in training_features.columns:
+            if col not in sample_row.index:
+                sample_row[col] = 0.0
 
-Przyszła weryfikacja powinna korzystać z:
-- self.face_frame
-- typing_features.csv
-- folderu faces/
-"""
+        keystroke_result = verify_claimed_identity(
+            training_features,
+            sample_row,
+            claimed_user=self.user_id,
+            k=3,
+            metric="euclidean",
+            threshold=KEYSTROKE_THRESHOLD,
+        )
 
-        Label(
-            frame,
-            text=summary,
-            font=("Arial", 12),
-            bg="white",
-            fg="#111827",
-            justify="left"
-        ).pack(anchor="w")
+        # --- Weryfikacja twarzy (Eigenfaces) ---
+        images, labels, label_map = load_faces(FACES_DIR)
+        recognizer = train_eigenfaces(images, labels)
+        face_result = verify_face(
+            recognizer,
+            label_map,
+            self.face_frame,
+            claimed_user=self.user_id,
+            threshold=FACE_THRESHOLD,
+        )
 
-        self.button(
-            self.root,
-            "Zamknij",
-            self.close_app,
-            "#111827"
-        ).pack(pady=15)
+        return fuse_and(face_result, keystroke_result)
+
+    def show_verification_result(
+        self,
+        result: BiometricFusionResult | None,
+        error: Exception | None = None,
+    ):
+        self.clear()
+
+        if error is not None:
+            self.header("Błąd weryfikacji", "Nie udało się przeprowadzić analizy")
+            frame = self.card()
+            Label(frame, text=str(error), font=("Arial", 11), bg="white",
+                  fg="#dc2626", wraplength=680, justify="left").pack(pady=10)
+            self.button(self.root, "Spróbuj ponownie", self.show_login_screen, "#2563eb").pack(pady=15)
+            return
+
+        if result.accepted:
+            verdict = "TOŻSAMOŚĆ POTWIERDZONA"
+            verdict_color = "#16a34a"
+            bg_color = "#f0fdf4"
+        else:
+            verdict = "TOŻSAMOŚĆ ODRZUCONA"
+            verdict_color = "#dc2626"
+            bg_color = "#fff1f2"
+
+        self.header("Krok 4: Wynik weryfikacji", f"Użytkownik: {result.claimed_user}")
+
+        verdict_frame = Frame(self.root, bg=bg_color, padx=40, pady=20)
+        verdict_frame.pack(pady=10, fill="x", padx=60)
+
+        Label(verdict_frame, text=verdict, font=("Arial", 22, "bold"),
+              bg=bg_color, fg=verdict_color).pack()
+
+        details_frame = self.card()
+
+        rows = [
+            ("Twarz (Eigenfaces)", result.face_matched,
+             f"pewność: {result.face_confidence:.0f}  (próg: {FACE_THRESHOLD:.0f})"),
+            ("Dynamika klawiatury (KNN)", result.keystroke_matched,
+             f"odległość: {result.keystroke_score:.1f} ms  (próg: {KEYSTROKE_THRESHOLD:.0f} ms)"),
+            ("Strategia fuzji", None, result.fusion_strategy),
+        ]
+
+        for label_text, matched, detail in rows:
+            row = Frame(details_frame, bg="white")
+            row.pack(fill="x", pady=4)
+
+            Label(row, text=label_text, font=("Arial", 12, "bold"),
+                  bg="white", fg="#374151", width=30, anchor="w").pack(side="left")
+
+            if matched is not None:
+                status_text = "TAK" if matched else "NIE"
+                status_color = "#16a34a" if matched else "#dc2626"
+                Label(row, text=status_text, font=("Arial", 12, "bold"),
+                      bg="white", fg=status_color, width=6).pack(side="left")
+
+            Label(row, text=detail, font=("Arial", 11),
+                  bg="white", fg="#6b7280").pack(side="left", padx=8)
+
+        self.button(self.root, "Zamknij", self.close_app, "#111827").pack(pady=20)
+
+    # ============================================================
 
     def close_app(self):
-        if self.camera:
-            self.camera.release()
-
+        self._release_camera()
         self.root.destroy()
 
 
